@@ -450,6 +450,33 @@ h1 { font-size: clamp(2rem, 4.6vw, 3.4rem); font-weight: 900; color: var(--navy)
   font-size: 0.88rem;
 }
 
+.hidden { display: none !important; }
+.player-form {
+  display: grid;
+  gap: 14px;
+  max-width: 460px;
+}
+.player-form label { display: grid; gap: 6px; font-weight: 800; }
+.player-form input {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 12px;
+  font: inherit;
+  background: var(--card);
+  color: var(--ink);
+}
+.field-error { color: var(--bad); font-weight: 700; }
+.send-status {
+  text-align: center;
+  font-weight: 800;
+  padding: 10px 14px;
+  border-radius: 12px;
+}
+.send-status.ok { background: rgba(31, 122, 69, 0.12); color: var(--good); }
+.send-status.bad { background: rgba(177, 51, 44, 0.1); color: var(--bad); }
+.result-list { display: grid; gap: 12px; margin: 18px 0; }
+#ddSink { position: absolute; width: 0; height: 0; border: 0; visibility: hidden; }
+
 @media (max-width: 900px) {
   .hero, .detail, .grid-3, .grid-2, .compare-grid, .lists { grid-template-columns: 1fr; }
   .nav { justify-content: flex-start; }

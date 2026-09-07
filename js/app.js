@@ -8,6 +8,8 @@ const ICONS = {
   gps: "🗺", "data-capture": "📡", medical: "🏥", comms: "📶", retail: "💳",
 };
 
+let savedStudent = {};
+try { savedStudent = JSON.parse(localStorage.getItem("dd-student") || "{}") || {}; } catch (_) {}
 const state = {
   filter: "all",
   search: "",
@@ -16,6 +18,14 @@ const state = {
   quiz: 0,
   answers: {},
   seen: JSON.parse(localStorage.getItem("dd-seen") || "[]"),
+  student: {
+    name: savedStudent.name || "",
+    klass: savedStudent.klass || "",
+  },
+  afterIdentity: "",
+  quizSent: false,
+  labSent: false,
+  sendNote: "",
 };
 
 function esc(s) {
@@ -30,16 +40,215 @@ function route() {
   document.querySelectorAll(".nav a").forEach((a) => {
     const key = a.dataset.nav;
     const here = parts[0] || "home";
-    const on = key === "catalog" ? here === "catalog" || here === "device" : here === key;
+    const on = key === "catalog"
+      ? here === "catalog" || here === "device"
+      : key === "decisions"
+        ? here === "decisions" || here === "lab-results"
+        : here === key;
     a.classList.toggle("active", on);
   });
   if (!parts.length) return renderHome();
   if (parts[0] === "catalog") return renderCatalog();
   if (parts[0] === "device") return renderDevice(parts[1]);
-  if (parts[0] === "decisions") return renderDecisions();
+  if (parts[0] === "decisions") {
+    if (needIdentity("decisions")) return;
+    return renderDecisions();
+  }
+  if (parts[0] === "lab-results") {
+    if (needIdentity("lab-results")) return;
+    return renderLabResults();
+  }
   if (parts[0] === "glossary") return renderGlossary();
-  if (parts[0] === "quiz") return renderQuiz();
+  if (parts[0] === "quiz") {
+    if (needIdentity("quiz")) return;
+    return renderQuiz();
+  }
   renderHome();
+}
+
+function saveStudent() {
+  localStorage.setItem("dd-student", JSON.stringify(state.student));
+}
+
+function needIdentity(next) {
+  if (state.student.name.trim()) return false;
+  state.afterIdentity = next;
+  renderIdentity();
+  return true;
+}
+
+function nowStamp() {
+  return new Date().toLocaleString("ar-JO", { dateStyle: "short", timeStyle: "medium" });
+}
+
+function sheetsUrl() {
+  return String((window.DD_CLOUD || {}).sheetsUrl || "").trim();
+}
+
+function sendCloud(pack) {
+  const url = sheetsUrl();
+  if (!url) return "missing";
+  const body = JSON.stringify(pack);
+  try {
+    let form = document.getElementById("ddCloudForm");
+    if (!form) {
+      form = document.createElement("form");
+      form.id = "ddCloudForm";
+      form.method = "POST";
+      form.target = "ddSink";
+      form.acceptCharset = "UTF-8";
+      form.style.display = "none";
+      ["payload", "data"].forEach((name) => {
+        const input = document.createElement("input");
+        input.type = "hidden";
+        input.name = name;
+        form.appendChild(input);
+      });
+      document.body.appendChild(form);
+    }
+    form.action = url;
+    form.querySelector("[name=payload]").value = body;
+    form.querySelector("[name=data]").value = body;
+    form.submit();
+    return "sent";
+  } catch (err) {
+    try {
+      fetch(url, {
+        method: "POST",
+        mode: "no-cors",
+        keepalive: true,
+        headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+        body: "payload=" + encodeURIComponent(body),
+      });
+      return "sent";
+    } catch (err2) {
+      return "fail";
+    }
+  }
+}
+
+function sendStatusHtml() {
+  if (state.sendNote === "sent") {
+    return `<p class="send-status ok">حُفظت النتيجة التفصيلية في جدول Google.</p>`;
+  }
+  if (state.sendNote === "missing") {
+    return `<p class="send-status bad">لم يُلصق رابط Web App بعد في js/config.js — راجع ملف SETUP-SHEETS.txt</p>`;
+  }
+  if (state.sendNote === "fail") {
+    return `<p class="send-status bad">تعذّر الإرسال. تحققي من النشر وأن الجدول مفتوح لنفس الحساب.</p>`;
+  }
+  return "";
+}
+
+function quizPayload() {
+  const details = QUIZ.map((item, i) => {
+    const chosenIdx = state.answers[i];
+    const ok = chosenIdx === item.answer;
+    return {
+      num: i + 1,
+      question: item.q,
+      chosen: chosenIdx === undefined ? "لم يجب" : item.options[chosenIdx],
+      correctText: item.options[item.answer],
+      result: chosenIdx === undefined ? "لم يجب" : (ok ? "صحيح" : "خطأ"),
+      explain: item.explain,
+    };
+  });
+  const correct = details.filter((d) => d.result === "صحيح").length;
+  const wrong = details.filter((d) => d.result === "خطأ").length;
+  return {
+    kind: "quiz",
+    name: state.student.name.trim(),
+    klass: state.student.klass.trim(),
+    when: nowStamp(),
+    correct,
+    wrong,
+    total: QUIZ.length,
+    percent: Math.round((correct / QUIZ.length) * 100),
+    correctSummary: details.filter((d) => d.result === "صحيح").map((d) => "س" + d.num).join("، ") || "لا يوجد",
+    wrongSummary: details.filter((d) => d.result !== "صحيح").map((d) => "س" + d.num + ": " + d.chosen).join(" | ") || "لا يوجد",
+    details,
+  };
+}
+
+function labPayload() {
+  const details = SCENARIOS.map((s, i) => {
+    const pickId = state.picked[s.id];
+    const chosen = s.options.find((o) => o.id === pickId);
+    const correctOpt = s.options.find((o) => o.ok);
+    const answered = Boolean(chosen);
+    const ok = answered && chosen.ok;
+    return {
+      num: i + 1,
+      title: s.title,
+      brief: s.brief,
+      chosen: answered ? chosen.label : "لم يختر",
+      correctText: correctOpt ? correctOpt.label : "",
+      result: !answered ? "لم يجب" : (ok ? "صحيح" : "خطأ"),
+      why: chosen ? chosen.why : (correctOpt ? correctOpt.why : ""),
+      answered: answered ? "نعم" : "لا",
+    };
+  });
+  const correct = details.filter((d) => d.result === "صحيح").length;
+  const wrong = details.filter((d) => d.result === "خطأ").length;
+  const skipped = details.filter((d) => d.result === "لم يجب").length;
+  return {
+    kind: "lab",
+    name: state.student.name.trim(),
+    klass: state.student.klass.trim(),
+    when: nowStamp(),
+    correct,
+    wrong,
+    skipped,
+    total: SCENARIOS.length,
+    percent: Math.round((correct / SCENARIOS.length) * 100),
+    choiceSummary: details.map((d) => d.num + ") " + d.result + " — " + d.chosen).join(" | "),
+    details,
+  };
+}
+
+function submitQuizOnce() {
+  if (state.quizSent) return;
+  state.quizSent = true;
+  state.sendNote = sendCloud(quizPayload());
+}
+
+function submitLabOnce() {
+  if (state.labSent) return;
+  state.labSent = true;
+  state.sendNote = sendCloud(labPayload());
+}
+
+function renderIdentity() {
+  $app.innerHTML = `
+    <p class="kicker">قبل البدء</p>
+    <h1>اسم الطالب يظهر في الجدول</h1>
+    <p class="lead">نكتب الاسم والشعبة مرة واحدة، ثم تُحفظ نتائج اختبر نفسك ومختبر البنية كلٌّ في ورقته مع تفاصيل كل سؤال.</p>
+    <form class="player-form panel" id="id-form" novalidate>
+      <label>
+        اسم الطالب
+        <input type="text" id="student-name" autocomplete="name" required value="${esc(state.student.name)}" />
+      </label>
+      <label>
+        الشعبة / الصف
+        <input type="text" id="student-class" autocomplete="off" value="${esc(state.student.klass)}" placeholder="مثال: 11 ت" />
+      </label>
+      <small class="field-error hidden" id="name-error">اكتبي الاسم حتى تُحفظ النتيجة باسمك.</small>
+      <button type="submit" class="btn">متابعة</button>
+    </form>
+  `;
+  $app.querySelector("#id-form").onsubmit = (e) => {
+    e.preventDefault();
+    const name = $app.querySelector("#student-name").value.trim();
+    const klass = $app.querySelector("#student-class").value.trim();
+    const err = $app.querySelector("#name-error");
+    if (!name) {
+      err.classList.remove("hidden");
+      return;
+    }
+    state.student = { name, klass };
+    saveStudent();
+    location.hash = "#/" + (state.afterIdentity || "quiz");
+  };
 }
 
 function markSeen(id) {
@@ -117,8 +326,8 @@ function renderHome() {
         <p>كل جهاز من النص: اسمه، صورته، استخدامه المؤسسي، ومقارنة بدائله.</p>
       </a>
       <a class="outcome" href="#/decisions" style="text-decoration:none">
-        <h3>مختبر القرار</h3>
-        <p>سيناريوهات شركة حقيقية. اختر البديل ثم اقرأ لماذا القرار مهني أو لا.</p>
+        <h3>مختبر البنية</h3>
+        <p>سيناريوهات شركة حقيقية. اختر البديل ثم اقرأ لماذا القرار مهني أو لا. النتيجة تُحفظ في الجدول.</p>
       </a>
       <a class="outcome" href="#/quiz" style="text-decoration:none">
         <h3>اختبر فهمك</h3>
@@ -235,7 +444,7 @@ function renderDecisions() {
   const s = SCENARIOS[state.scenario];
   const pick = state.picked[s.id];
   $app.innerHTML = `
-    <p class="kicker">مختبر القرار · ${state.scenario + 1} / ${SCENARIOS.length}</p>
+    <p class="kicker">مختبر البنية · ${state.scenario + 1} / ${SCENARIOS.length}</p>
     <h1>ابنِ البنية ولا تجمع أجهزة</h1>
     <p class="lead">اقرأ قصة المؤسسة ثم اختر بديلًا واحدًا. الاختيار الخاطئ ليس نهاية الدرس: اقرأ السبب وتعلّم القاعدة.</p>
     <article class="panel scenario">
@@ -264,7 +473,7 @@ function renderDecisions() {
   });
   $app.querySelector("#prev").onclick = () => { state.scenario = Math.max(0, state.scenario - 1); renderDecisions(); };
   $app.querySelector("#next").onclick = () => {
-    if (state.scenario === SCENARIOS.length - 1) location.hash = "#/quiz";
+    if (state.scenario === SCENARIOS.length - 1) location.hash = "#/lab-results";
     else { state.scenario += 1; renderDecisions(); }
   };
 }
@@ -280,18 +489,70 @@ function renderGlossary() {
   `;
 }
 
+function renderLabResults() {
+  submitLabOnce();
+  const pack = labPayload();
+  $app.innerHTML = `
+    <p class="kicker">مختبر البنية · النتيجة</p>
+    <h1>تقرير قراراتك المؤسسية</h1>
+    <div class="score-ring" style="--p:${pack.percent}"><span>${pack.correct}/${pack.total}</span></div>
+    <p class="lead" style="text-align:center">${esc(state.student.name)} — صحيحة ${pack.correct} · خاطئة ${pack.wrong} · لم يجب ${pack.skipped}</p>
+    ${sendStatusHtml()}
+    <div class="result-list">
+      ${pack.details.map((d) => `
+        <article class="term">
+          <h3>${d.num}. ${esc(d.title)} · ${esc(d.result)}</h3>
+          <p><strong>اخترت:</strong> ${esc(d.chosen)}</p>
+          <p><strong>الأصح:</strong> ${esc(d.correctText)}</p>
+          <p>${esc(d.why)}</p>
+        </article>
+      `).join("")}
+    </div>
+    <p class="pager">
+      <button class="btn ghost" id="lab-retry">إعادة المختبر</button>
+      <a class="btn" href="#/quiz" style="text-decoration:none">انتقل لاختبر نفسك</a>
+    </p>
+  `;
+  $app.querySelector("#lab-retry").onclick = () => {
+    state.picked = {};
+    state.scenario = 0;
+    state.labSent = false;
+    state.sendNote = "";
+    location.hash = "#/decisions";
+  };
+}
+
 function renderQuiz() {
   if (state.quiz >= QUIZ.length) {
-    const score = Object.entries(state.answers).filter(([i, a]) => QUIZ[i].answer === a).length;
-    const p = Math.round((score / QUIZ.length) * 100);
+    submitQuizOnce();
+    const pack = quizPayload();
     $app.innerHTML = `
-      <p class="kicker">النتيجة</p>
+      <p class="kicker">اختبر نفسك · النتيجة</p>
       <h1>أداء اتخاذ القرار</h1>
-      <div class="score-ring" style="--p:${p}"><span>${score}/${QUIZ.length}</span></div>
+      <div class="score-ring" style="--p:${pack.percent}"><span>${pack.correct}/${pack.total}</span></div>
+      <p class="lead" style="text-align:center">${esc(state.student.name)} — ${pack.correct} صحيحة من ${pack.total} · ${pack.percent}%</p>
+      ${sendStatusHtml()}
+      <div class="result-list">
+        ${pack.details.map((d) => `
+          <article class="term">
+            <h3>سؤال ${d.num} · ${esc(d.result)}</h3>
+            <p>${esc(d.question)}</p>
+            <p><strong>إجابتك:</strong> ${esc(d.chosen)}</p>
+            <p><strong>الصحيحة:</strong> ${esc(d.correctText)}</p>
+            <p>${esc(d.explain)}</p>
+          </article>
+        `).join("")}
+      </div>
       <p class="lead" style="text-align:center">القاعدة الذهبية: طابق الجهاز مع المهمة، والموقع، والتكلفة التشغيلية، والسياسة — لا مع الإعلان.</p>
       <p style="text-align:center"><button class="btn" id="retry">إعادة الاختبار</button></p>
     `;
-    $app.querySelector("#retry").onclick = () => { state.quiz = 0; state.answers = {}; renderQuiz(); };
+    $app.querySelector("#retry").onclick = () => {
+      state.quiz = 0;
+      state.answers = {};
+      state.quizSent = false;
+      state.sendNote = "";
+      renderQuiz();
+    };
     return;
   }
   const item = QUIZ[state.quiz];
